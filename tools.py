@@ -75,10 +75,24 @@ class AppointmentTools(llm.ToolContext):
             await log_call(self.phone_number or "unknown", self.lead_name, outcome, reason, duration, self.recording_url)
         except Exception as exc:
             logger.error("Failed to log call: %s", exc)
+        # Give Gemini ~1.5s to finish speaking the goodbye line before we tear down.
+        await asyncio.sleep(1.5)
+        # Delete the LiveKit room — this forcibly disconnects the SIP participant
+        # (= actually hangs up the phone call) as well as the agent. Without this,
+        # the SIP leg keeps the call alive in an empty room until LiveKit's
+        # timeout, and the caller hears silence instead of dial-tone.
+        room_name = self.ctx.room.name
         try:
-            await self.ctx.room.disconnect()
-        except Exception:
-            pass
+            lk = api.LiveKitAPI()
+            await lk.room.delete_room(api.DeleteRoomRequest(room=room_name))
+            await lk.aclose()
+            logger.info("Room %s deleted — SIP leg terminated", room_name)
+        except Exception as exc:
+            logger.error("Room delete failed for %s: %s — falling back to agent disconnect", room_name, exc)
+            try:
+                await self.ctx.room.disconnect()
+            except Exception:
+                pass
         return "Call ended."
 
     @llm.function_tool
