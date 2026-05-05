@@ -4,6 +4,24 @@ from datetime import datetime, timedelta
 from typing import Optional
 from collections import defaultdict
 
+# ─── Env var alias normalization ─────────────────────────────────
+# Users commonly set intuitive names like GEMINI_API_KEY / SUPABASE_KEY.
+# Our code (and the Google/Supabase SDKs) expect canonical names.
+# If the canonical name is empty but an alias is set, promote the alias.
+_ALIASES = {
+    "GOOGLE_API_KEY":       ["GEMINI_API_KEY", "GOOGLE_GEMINI_API_KEY"],
+    "SUPABASE_SERVICE_KEY": ["SUPABASE_KEY", "SUPABASE_SERVICE_ROLE_KEY"],
+    "SUPABASE_URL":         ["NEXT_PUBLIC_SUPABASE_URL"],
+}
+for canonical, aliases in _ALIASES.items():
+    if not os.environ.get(canonical):
+        for alt in aliases:
+            val = os.environ.get(alt)
+            if val:
+                os.environ[canonical] = val
+                break
+
+
 DEFAULTS = {
     "LIVEKIT_URL":             os.getenv("LIVEKIT_URL", ""),
     "LIVEKIT_API_KEY":         os.getenv("LIVEKIT_API_KEY", ""),
