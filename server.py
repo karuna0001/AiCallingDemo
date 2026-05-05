@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 _orig_ssl = ssl.create_default_context
@@ -26,12 +26,13 @@ def _certifi_ssl(purpose=ssl.Purpose.SERVER_AUTH, **kwargs):
 ssl.create_default_context = _certifi_ssl
 
 from db import (
-    cancel_appointment, clear_errors, create_agent_profile, create_campaign,
-    delete_agent_profile, delete_campaign, get_agent_profile, get_all_agent_profiles,
-    get_all_appointments, get_all_calls, get_all_campaigns, get_all_settings,
-    get_calls_by_phone, get_campaign, get_contacts, get_logs, get_setting,
-    get_stats, init_db, log_error, save_settings, set_default_agent_profile,
-    set_setting, update_agent_profile, update_call_notes, update_campaign_run_stats,
+    ConfigError, cancel_appointment, clear_errors, create_agent_profile,
+    create_campaign, delete_agent_profile, delete_campaign, get_agent_profile,
+    get_all_agent_profiles, get_all_appointments, get_all_calls,
+    get_all_campaigns, get_all_settings, get_calls_by_phone, get_campaign,
+    get_contacts, get_logs, get_setting, get_stats, init_db, log_error,
+    save_settings, set_default_agent_profile, set_setting,
+    update_agent_profile, update_call_notes, update_campaign_run_stats,
     update_campaign_status,
 )
 from prompts import DEFAULT_SYSTEM_PROMPT
@@ -51,6 +52,24 @@ except ImportError:
     logger.warning("APScheduler not installed — campaign scheduling disabled")
 
 app = FastAPI(title="OutboundAI Dashboard", version="1.0.0")
+
+
+@app.exception_handler(ConfigError)
+async def _config_error_handler(request: Request, exc: ConfigError):
+    return JSONResponse(status_code=503, content={"error": str(exc)})
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    msg = str(exc)
+    # Map the most common Supabase misconfig to a clean 503 instead of a 500 stack trace.
+    if "supabase_key is required" in msg or "supabase_url is required" in msg.lower():
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Supabase not configured. Set SUPABASE_URL and SUPABASE_SERVICE_KEY env vars."},
+        )
+    logger.exception("Unhandled error on %s: %s", request.url.path, exc)
+    return JSONResponse(status_code=500, content={"error": msg})
 
 
 @app.on_event("startup")
@@ -142,6 +161,15 @@ async def api_dispatch_call(req: CallRequest):
     secret = await eff("LIVEKIT_API_SECRET")
     if not all([url, key, secret]):
         raise HTTPException(400, "LiveKit credentials not configured. Go to Settings → LiveKit.")
+    # Pre-flight: without these the agent will silently fail mid-call.
+    if not await eff("OUTBOUND_TRUNK_ID"):
+        raise HTTPException(
+            400,
+            "OUTBOUND_TRUNK_ID is not set. Either click 'Create SIP Trunk' in Settings → Vobiz, "
+            "or paste an existing trunk ID into your Coolify env vars and redeploy.",
+        )
+    if not await eff("GOOGLE_API_KEY"):
+        raise HTTPException(400, "GOOGLE_API_KEY is not set — the Gemini Live agent cannot connect.")
     phone = req.phone.strip()
     if not phone.startswith("+"):
         raise HTTPException(400, "Phone must be in E.164 format: +919876543210")

@@ -39,14 +39,31 @@ SENSITIVE_KEYS = {
 }
 
 
+class ConfigError(Exception):
+    """Raised when a required env var is missing — surfaced as HTTP 503 by the server."""
+
+
+def _require_supabase() -> tuple:
+    url = _default("SUPABASE_URL")
+    key = _default("SUPABASE_SERVICE_KEY")
+    if not url or not key:
+        raise ConfigError(
+            "Supabase not configured. Set SUPABASE_URL and SUPABASE_SERVICE_KEY "
+            "as env vars in your VPS / Coolify deployment."
+        )
+    return url, key
+
+
 def _sdb():
+    url, key = _require_supabase()
     from supabase import create_client
-    return create_client(_default("SUPABASE_URL"), _default("SUPABASE_SERVICE_KEY"))
+    return create_client(url, key)
 
 
 async def _adb():
+    url, key = _require_supabase()
     from supabase._async.client import create_client
-    return await create_client(_default("SUPABASE_URL"), _default("SUPABASE_SERVICE_KEY"))
+    return await create_client(url, key)
 
 
 def init_db() -> None:
@@ -65,8 +82,12 @@ def init_db() -> None:
 
 
 async def get_all_settings() -> dict:
-    db = await _adb()
-    result = await db.table("settings").select("key, value").execute()
+    try:
+        db = await _adb()
+        result = await db.table("settings").select("key, value").execute()
+    except ConfigError:
+        # Supabase not set — still return env-only view so the UI works.
+        result = type("R", (), {"data": []})()
     known_keys = [
         "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
         "GOOGLE_API_KEY", "GEMINI_MODEL", "GEMINI_TTS_VOICE", "USE_GEMINI_REALTIME",
